@@ -41,5 +41,8 @@ def generate_normal_scenarios(
         size=(n_scenarios, len(mu))
     )
 
+    # ✅ 消除负值（关键修复）
+    scenarios = np.maximum(scenarios, 0.0)
+
     return scenarios
 

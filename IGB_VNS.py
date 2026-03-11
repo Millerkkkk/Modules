@@ -38,8 +38,6 @@ from Modules.VNS.shaking import Shaker
 from Modules.VNS.vnd import VNDRefiner
 
 
-import copy
-from collections import Counter
 
 def pack_solution(routes_by_clusters, cend):
     return {
@@ -48,6 +46,9 @@ def pack_solution(routes_by_clusters, cend):
         "ra": float(cend.get("total_ra", 0.0)),
         "cend": cend,
     }
+
+def dominates_cost(a, b, eps=1e-9):
+    return a["cost"] < b["cost"] - eps
 
 def flatten_routes(routes_clusters):
     return {cid: [n for r in routes for n in r] for cid, routes in routes_clusters.items()}
@@ -282,6 +283,7 @@ def main():
         nb,
         evaluator=lambda routes: evaluator.evaluate_saa(routes, scenarios),
         eval_proxy=lambda r: evaluator.evaluate_saa(r, scenarios[:5]),
+        dominates_fn=dominates_cost,
         rng=rng,
         eps=1e-9
     )
@@ -529,6 +531,7 @@ def run_once(instance_path: str, beta: float, run_id: int, seed: int):
         nb,
         evaluator=lambda routes: evaluator.evaluate_saa(routes, scenarios),      # full 100
         eval_proxy=lambda r: evaluator.evaluate_saa(r, scenarios[:5]),          # proxy 5
+        dominates_fn=dominates_cost,
         rng=rng,
         eps=1e-9
     )

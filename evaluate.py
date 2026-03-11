@@ -3,6 +3,8 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
+from concurrent.futures import ThreadPoolExecutor
+
 from Decode.models.energy import EnergyModel
 from Decode.models.RA import RangeAnxietyModel
 from Decode.decoder import Decoder
@@ -85,6 +87,14 @@ def _stage_costs_from_cend(cend: dict) -> tuple[float, float]:
         _sum_cost_list(cend.get("recourse_travel_cost_list", {})) +
         _sum_cost_list(cend.get("recourse_charging_cost_list", {}))
     )
+    return stage1, stage2
+
+def _stage_ras_from_cend(cend: dict) -> tuple[float, float]:
+    # 第一阶段：dispatch + plan travel + plan service + plan charging
+    stage1 = _sum_cost_list(cend.get("routes_plan_ra", {}))
+    
+    # 第二阶段：recourse travel + recourse charging
+    stage2 = _sum_cost_list(cend.get("routes_recourse_ra", {}))
     return stage1, stage2
 
 
@@ -233,7 +243,7 @@ class Evaluator:
 
 
 
-    def evaluate_route_spr(self, flattened_route_global, real_demand) -> Tuple[float, float, float, Any, int, float, float, float, float, float, float]:
+    def evaluate_route_spr(self, flattened_route_global, real_demand) -> Tuple:
         route = flattened_route_global.copy()
         if not route:
             return (0.0, 0.0, 0.0, [], 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -248,7 +258,8 @@ class Evaluator:
 
         decode_route, plan_travel_dist, plan_travel_time, \
         plan_charging_time, plan_service_time, \
-        plan_num_charge, Q, departure_time, load, total_ra, \
+        plan_num_charge, Q, departure_time, load, \
+        total_ra, plan_ra, recourse_ra, \
         recourse_dist, recourse_travel_time, recourse_charging_time, \
         recourse_num_restock, recourse_num_charge = \
             self.decoder.decode_spr(full_route, EV_load, real_demand)
@@ -263,6 +274,9 @@ class Evaluator:
 
         return (
             float(total_ra),
+            float(plan_ra),
+            float(recourse_ra),
+            
             float(route_cost),
             float(plan_travel_dist),
             decode_route,
@@ -279,7 +293,7 @@ class Evaluator:
     @staticmethod
     def _pack_spr(
         per_cluster_results: List[
-            Tuple[int, Tuple[float, float, float, Any, int, float, float, float, float, float, float]]
+            Tuple[int, Tuple[float, float, float, Any, int, float, float, float, float, float, float, float, float]]
         ]
     ) -> Dict[str, Any]:
 
@@ -291,6 +305,9 @@ class Evaluator:
         routes_cost = {}
         routes_dist = {}
 
+        routes_plan_ra = {}
+        routes_recourse_ra = {}
+
         plan_travel_cost_list = {}
         dispatch_cost_list = {}
         plan_service_cost_list = {}
@@ -300,7 +317,7 @@ class Evaluator:
         recourse_charging_cost_list = {}
 
         for cid, (
-            ra, route_cost, travel_dist, decode_route, num_charge,
+            ra, plan_ra, recourse_ra, route_cost, travel_dist, decode_route, num_charge,
             plan_travel_cost, dispatch_cost, plan_service_cost,
             plan_charging_cost, recourse_travel_cost,
             recourse_charging_cost
@@ -313,6 +330,9 @@ class Evaluator:
             routes_ra[cid] = ra
             routes_cost[cid] = route_cost
             routes_dist[cid] = travel_dist
+
+            routes_plan_ra[cid] = plan_ra
+            routes_recourse_ra[cid] = recourse_ra
 
             plan_travel_cost_list[cid] = plan_travel_cost
             dispatch_cost_list[cid] = dispatch_cost
@@ -334,6 +354,9 @@ class Evaluator:
 
             "recourse_travel_cost_list": recourse_travel_cost_list,
             "recourse_charging_cost_list": recourse_charging_cost_list,
+
+            "routes_plan_ra": routes_plan_ra,
+            "routes_recourse_ra": routes_recourse_ra,
 
             "routes_ra": routes_ra,
             "routes_cost": routes_cost,
@@ -366,7 +389,7 @@ class Evaluator:
             res_fwd = self.evaluate_route_spr(flat_route, real_demand)
             res_bwd = self.evaluate_route_spr(list(reversed(flat_route)), real_demand)
 
-            if res_bwd[1] < res_fwd[1]:  # compare route_cost
+            if res_bwd[3] < res_fwd[3]:  # compare route_cost
                 flat_rev = list(reversed(flat_route))
                 new_gbs = []
                 idx = 0
@@ -392,6 +415,9 @@ class Evaluator:
         stage1_samples = []
         stage2_samples = []
 
+        stage1_samples_ra = []
+        stage2_samples_ra = []
+
         for s in range(S):
             real_demand = scenarios[s]
             cend = self.evaluate_clusters_spr(routes_by_clusters, real_demand)  # full dict
@@ -403,6 +429,10 @@ class Evaluator:
             st1, st2 = _stage_costs_from_cend(cend)
             stage1_samples.append(st1)
             stage2_samples.append(st2)
+
+            ra1, ra2 = _stage_ras_from_cend(cend)
+            stage1_samples_ra.append(ra1)
+            stage2_samples_ra.append(ra2)
 
 
         # 代表场景：总成本最接近平均成本
@@ -417,6 +447,9 @@ class Evaluator:
         # ✅新增：输出第一/二阶段平均值
         avg_cend["stage1_cost"] = float(sum(stage1_samples) / S)
         avg_cend["stage2_cost"] = float(sum(stage2_samples) / S)
+
+        avg_cend["stage1_ra"] = float(sum(stage1_samples_ra) / S)
+        avg_cend["stage2_ra"] = float(sum(stage2_samples_ra) / S)
 
         # 可选：保留样本，方便你检查方差/分布
         avg_cend["stage1_cost_samples"] = stage1_samples
@@ -462,3 +495,79 @@ class Evaluator:
         return eval_dict, routes_fixed
     
 
+
+    def _evaluate_one_saa_scenario(self, routes_by_clusters, real_demand):
+        cend = self.evaluate_clusters_spr(routes_by_clusters, real_demand)
+        st1, st2 = _stage_costs_from_cend(cend)
+        return {
+            "cend": cend,
+            "total_cost": float(cend["total_cost"]),
+            "total_ra": float(cend.get("total_ra", 0.0)),
+            "stage1_cost": float(st1),
+            "stage2_cost": float(st2),
+        }
+    
+
+    def evaluate_saa_n_workers(self, routes_by_clusters, scenarios, n_workers: int = 1):
+        S = int(scenarios.shape[0])
+
+        if n_workers <= 1:
+            results = []
+            for s in range(S):
+                real_demand = scenarios[s]
+                results.append(self._evaluate_one_saa_scenario(routes_by_clusters, real_demand))
+        else:
+            with ThreadPoolExecutor(max_workers=n_workers) as ex:
+                futures = [
+                    ex.submit(self._evaluate_one_saa_scenario, routes_by_clusters, scenarios[s])
+                    for s in range(S)
+                ]
+                results = [f.result() for f in futures]
+
+        cends = [r["cend"] for r in results]
+        total_costs = [r["total_cost"] for r in results]
+        total_ras = [r["total_ra"] for r in results]
+        stage1_samples = [r["stage1_cost"] for r in results]
+        stage2_samples = [r["stage2_cost"] for r in results]
+
+        avg_total_cost = sum(total_costs) / S
+        rep_idx = min(range(S), key=lambda i: abs(total_costs[i] - avg_total_cost))
+        avg_cend = copy.deepcopy(cends[rep_idx])
+
+        avg_cend["total_cost"] = float(avg_total_cost)
+        avg_cend["total_ra"] = float(sum(total_ras) / S)
+        avg_cend["stage1_cost"] = float(sum(stage1_samples) / S)
+        avg_cend["stage2_cost"] = float(sum(stage2_samples) / S)
+
+        avg_cend["stage1_cost_samples"] = stage1_samples
+        avg_cend["stage2_cost_samples"] = stage2_samples
+        avg_cend["saa_rep_scenario_index"] = int(rep_idx)
+
+        return avg_cend
+
+
+    def evaluate_init_saa_n_workers(self, routes_by_clusters, scenarios, eps: float = 1e-9, n_workers: int = 1):
+        routes_fixed = copy.deepcopy(routes_by_clusters)
+
+        for cid, gb_segments in routes_fixed.items():
+            lens = [len(seg) for seg in gb_segments]
+            flat_route = [n for seg in gb_segments for n in seg]
+
+            cend_fwd = self.evaluate_saa_n_workers({cid: gb_segments}, scenarios, n_workers=n_workers)
+            cost_fwd = float(cend_fwd["total_cost"])
+
+            flat_rev = list(reversed(flat_route))
+            new_gbs = []
+            idx = 0
+            for L in lens:
+                new_gbs.append(flat_rev[idx: idx + L])
+                idx += L
+
+            cend_bwd = self.evaluate_saa_n_workers({cid: new_gbs}, scenarios, n_workers=n_workers)
+            cost_bwd = float(cend_bwd["total_cost"])
+
+            if cost_bwd < cost_fwd - eps:
+                routes_fixed[cid] = new_gbs
+
+        eval_dict = self.evaluate_saa_n_workers(routes_fixed, scenarios, n_workers=n_workers)
+        return eval_dict, routes_fixed

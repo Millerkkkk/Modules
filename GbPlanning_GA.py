@@ -87,6 +87,10 @@ class Ant:
 # Core: ACO for GB ordering
 # =========================
 
+# =========================
+# Core: GA for GB ordering
+# =========================
+
 class GbPlannerGA:
     """
     输入：
@@ -114,9 +118,8 @@ class GbPlannerGA:
 
         self.dist = cdist(self.centers, self.centers, metric="euclidean")
 
-        # depot attach precompute：每个GB到最近depot的距离
         # attach[i] = min_depot_dist(GB_i)
-        self.attach = cdist(self.centers, self.depots).min(axis=1)
+        self.attach = cdist(self.centers, self.depots).min(axis=1) if self.m > 0 else np.array([], dtype=float)
 
         self.best_route: Optional[np.ndarray] = None
         self.best_cost: float = float("inf")
@@ -124,10 +127,11 @@ class GbPlannerGA:
     def evaluate(self, route: np.ndarray) -> float:
         """route: shape (m,), permutation"""
         if route.size == 0:
-            return float("inf")
-        # 内部距离和
+            return 0.0
+        if route.size == 1:
+            return float(self.attach[route[0]] + self.attach[route[0]])
+
         total = float(self.dist[route[:-1], route[1:]].sum())
-        # depot 首尾连接（最近 depot）
         total += float(self.attach[route[0]] + self.attach[route[-1]])
         return total
 
@@ -142,7 +146,7 @@ class GbPlannerGA:
 
     def tournament_select(self, pop: np.ndarray, costs: np.ndarray) -> np.ndarray:
         """Select one parent by tournament (min cost wins)."""
-        k = self.params.tournament_k
+        k = min(int(self.params.tournament_k), pop.shape[0])
         idx = self.rng.integers(0, pop.shape[0], size=k)
         best = idx[np.argmin(costs[idx])]
         return pop[best].copy()
@@ -150,10 +154,15 @@ class GbPlannerGA:
     def ox_crossover(self, p1: np.ndarray, p2: np.ndarray) -> np.ndarray:
         """Order Crossover (OX) for permutations."""
         n = p1.size
+        if n <= 1:
+            return p1.copy()
+
         a, b = sorted(self.rng.choice(n, size=2, replace=False))
         child = np.full(n, -1, dtype=int)
+
         # copy slice from p1
         child[a:b+1] = p1[a:b+1]
+
         # fill remaining from p2 in order
         fill = [x for x in p2 if x not in child]
         ptr = 0
@@ -161,13 +170,20 @@ class GbPlannerGA:
             if child[i] == -1:
                 child[i] = fill[ptr]
                 ptr += 1
+
         return child
 
     def mutate(self, x: np.ndarray) -> None:
         """In-place mutation: inversion or swap."""
         n = x.size
-        if n <= 2:
+        if n <= 1:
             return
+
+        if n == 2:
+            if self.rng.random() < 0.5:
+                x[0], x[1] = x[1], x[0]
+            return
+
         if self.rng.random() < self.params.inversion_rate:
             i, j = sorted(self.rng.choice(n, size=2, replace=False))
             x[i:j+1] = x[i:j+1][::-1]
@@ -177,6 +193,27 @@ class GbPlannerGA:
 
     def solve(self) -> ACOResult:
         history: List[float] = []
+
+        # ===== 边界情况：0个或1个GB，直接返回 =====
+        if self.m == 0:
+            self.best_route = np.array([], dtype=int)
+            self.best_cost = 0.0
+            history.append(self.best_cost)
+            return ACOResult(
+                order=[],
+                cost=self.best_cost,
+                history=history,
+            )
+
+        if self.m == 1:
+            self.best_route = np.array([0], dtype=int)
+            self.best_cost = self.evaluate(self.best_route)
+            history.append(self.best_cost)
+            return ACOResult(
+                order=[0],
+                cost=self.best_cost,
+                history=history,
+            )
 
         pop = self.init_population()
         costs = np.array([self.evaluate(ind) for ind in pop], dtype=float)
@@ -188,13 +225,12 @@ class GbPlannerGA:
         history.append(self.best_cost)
 
         for _gen in range(self.params.num_gen):
-            # 精英保留
             elite_size = max(0, int(self.params.elite_size))
+            elite_size = min(elite_size, self.params.pop_size)
+
             elite_idx = np.argsort(costs)[:elite_size]
             elites = pop[elite_idx].copy()
-            elites_cost = costs[elite_idx].copy()
 
-            # 生成新一代
             new_pop = []
             if elite_size > 0:
                 for e in elites:
@@ -222,7 +258,6 @@ class GbPlannerGA:
             pop = np.array(new_pop, dtype=int)
             costs = np.array([self.evaluate(ind) for ind in pop], dtype=float)
 
-            # 更新全局最优
             gen_best_idx = int(np.argmin(costs))
             gen_best_cost = float(costs[gen_best_idx])
             if gen_best_cost < self.best_cost:
@@ -237,10 +272,10 @@ class GbPlannerGA:
             history=history,
         )
 
+
 # =========================
 # Simple functional API
 # =========================
-
 def plan_gb_order_ga(
     gb_centers: np.ndarray,
     depots_xy: np.ndarray,

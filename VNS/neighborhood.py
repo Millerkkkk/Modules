@@ -899,6 +899,213 @@ class Neighborhood:
 
 
 
+
+        # ============================================================
+    # Rewritten from code1 (keep old names for compatibility)
+    # ============================================================
+
+    # -----------------------
+    # Node-level
+    # -----------------------
+
+    def node_intra_gb_relocate(
+        self,
+        routes_by_clusters: RoutesByClusters,
+        cid: Optional[int] = None
+    ) -> RoutesByClusters:
+        """ONE random relocate (1-opt) inside a randomly chosen GB of a cluster."""
+        sol = self.deep_copy_routes(routes_by_clusters)
+        cands = self._valid_clusters_for_gb_ops(sol, cid, min_gb_count=1)
+        c = self._pick_cluster(cands)
+        if c is None:
+            return sol
+
+        gbs = sol[c]
+        gb_indices = [i for i, gb in enumerate(gbs) if len(gb) >= 3]
+        if not gb_indices:
+            return sol
+
+        gi = int(self.rng.choice(gb_indices))
+        gb = gbs[gi]
+        L = len(gb)
+
+        i = int(self.rng.integers(0, L))
+        node = gb.pop(i)
+
+        newL = len(gb)
+        j = int(self.rng.integers(0, newL + 1))
+        gb.insert(j, node)
+        return sol
+
+    def node_intra_route_relocate_across_any_gb(
+        self,
+        routes_by_clusters: RoutesByClusters,
+        cid: Optional[int] = None,
+        *,
+        protect_min_len: bool = True,
+        drop_empty_gb: bool = True,
+    ) -> RoutesByClusters:
+        """
+        ONE move: pick a node from one GB and insert into another GB within the SAME cluster (ANY GB pair).
+        """
+        sol = self.deep_copy_routes(routes_by_clusters)
+        cands = self._valid_clusters_for_gb_ops(sol, cid, min_gb_count=2)
+        c = self._pick_cluster(cands)
+        if c is None:
+            return sol
+
+        gbs = sol[c]
+
+        src_candidates = []
+        for gi, gb in enumerate(gbs):
+            if protect_min_len:
+                if len(gb) > self.min_gb_len:
+                    src_candidates.append(gi)
+            else:
+                if len(gb) > 0:
+                    src_candidates.append(gi)
+        if not src_candidates:
+            return sol
+
+        src_gi = int(self.rng.choice(src_candidates))
+        dst_gi = int(self.rng.choice([i for i in range(len(gbs)) if i != src_gi]))
+
+        src = gbs[src_gi]
+        dst = gbs[dst_gi]
+
+        i = int(self.rng.integers(0, len(src)))
+        node = src.pop(i)
+
+        j = int(self.rng.integers(0, len(dst) + 1))
+        dst.insert(j, node)
+
+        if drop_empty_gb and len(src) == 0:
+            gbs.pop(src_gi)
+        return sol
+
+    def node_intra_gb_2opt(
+        self,
+        routes_by_clusters: RoutesByClusters,
+        cid: Optional[int] = None
+    ) -> RoutesByClusters:
+        """ONE random 2-opt (segment reverse) inside a randomly chosen GB of a cluster."""
+        sol = self.deep_copy_routes(routes_by_clusters)
+        cands = self._valid_clusters_for_gb_ops(sol, cid, min_gb_count=1)
+        c = self._pick_cluster(cands)
+        if c is None:
+            return sol
+
+        gbs = sol[c]
+        gb_indices = [i for i, gb in enumerate(gbs) if len(gb) >= 4]
+        if not gb_indices:
+            return sol
+
+        gi = int(self.rng.choice(gb_indices))
+        gb = gbs[gi]
+        L = len(gb)
+
+        i = int(self.rng.integers(0, L - 1))
+        j = int(self.rng.integers(i + 1, L))
+        gb[i:j + 1] = list(reversed(gb[i:j + 1]))
+        return sol
+
+    def node_intra_gb_reverse(
+        self,
+        routes_by_clusters: RoutesByClusters,
+        cid: Optional[int] = None,
+    ) -> RoutesByClusters:
+        """
+        ONE move: reverse the ENTIRE node order of a GB (full reverse).
+        """
+        sol = self.deep_copy_routes(routes_by_clusters)
+
+        cands = self._valid_clusters_for_gb_ops(sol, cid, min_gb_count=1)
+        c = self._pick_cluster(cands)
+        if c is None:
+            return sol
+
+        gbs = sol[c]
+        gb_indices = [i for i, gb in enumerate(gbs) if len(gb) >= 2]
+        if not gb_indices:
+            return sol
+
+        gi = int(self.rng.choice(gb_indices))
+        gbs[gi].reverse()
+
+        return sol
+
+    # -----------------------
+    # GB-level
+    # -----------------------
+
+    def gb_relocate(
+        self,
+        routes_by_clusters: RoutesByClusters,
+        cid: Optional[int] = None
+    ) -> RoutesByClusters:
+        """ONE random relocate of a GB within a cluster."""
+        sol = self.deep_copy_routes(routes_by_clusters)
+        cands = self._valid_clusters_for_gb_ops(sol, cid, min_gb_count=2)
+        c = self._pick_cluster(cands)
+        if c is None:
+            return sol
+
+        gbs = sol[c]
+        i = int(self.rng.integers(0, len(gbs)))
+        gb = gbs.pop(i)
+        j = int(self.rng.integers(0, len(gbs) + 1))
+        gbs.insert(j, gb)
+        return sol
+
+    def gb_swap(
+        self,
+        routes_by_clusters: RoutesByClusters,
+        cid: Optional[int] = None
+    ) -> RoutesByClusters:
+        """ONE random swap of two GBs within a cluster."""
+        sol = self.deep_copy_routes(routes_by_clusters)
+        cands = self._valid_clusters_for_gb_ops(sol, cid, min_gb_count=2)
+        c = self._pick_cluster(cands)
+        if c is None:
+            return sol
+
+        gbs = sol[c]
+        i, j = self.rng.choice(len(gbs), size=2, replace=False)
+        i, j = int(i), int(j)
+        gbs[i], gbs[j] = gbs[j], gbs[i]
+        return sol
+
+    def gb_reverse(
+        self,
+        routes_by_clusters: RoutesByClusters,
+        cid: Optional[int] = None
+    ) -> RoutesByClusters:
+        """ONE random reverse of a contiguous GB segment within a cluster."""
+        sol = self.deep_copy_routes(routes_by_clusters)
+        cands = self._valid_clusters_for_gb_ops(sol, cid, min_gb_count=3)
+        c = self._pick_cluster(cands)
+        if c is None:
+            return sol
+
+        gbs = sol[c]
+        i = int(self.rng.integers(0, len(gbs) - 1))
+        j = int(self.rng.integers(i + 1, len(gbs)))
+        gbs[i:j + 1] = list(reversed(gbs[i:j + 1]))
+        return sol
+
+    # -----------------------
+    # Boundary relocate (destroy + repair)
+    # -----------------------
+
+    def boundary_relocate(
+        self,
+        routes_by_clusters: RoutesByClusters,
+        cid: Optional[int] = None
+    ) -> RoutesByClusters:
+        destroyed, removed = self.boundary_destroy(routes_by_clusters, cid=cid)
+        repaired = self.greedy_repair(destroyed, removed, cid=cid)
+        return repaired
+
     
 
     # def relocate_node_intra_route(

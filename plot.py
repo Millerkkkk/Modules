@@ -408,3 +408,124 @@ def plot_clusters_gbs_with_gb_routes(
     return fig, ax
 
 
+
+
+
+
+
+
+
+
+
+
+def plot_pareto_front(
+    archive,
+    title="Pareto Front",
+    save_path=None,
+    show_line=True,
+):
+    """
+    Plot publication-quality Pareto front.
+
+    Parameters
+    ----------
+    archive : list[dict]
+        Pareto solutions (each dict must contain 'cost' and 'ra')
+    title : str
+    save_path : str or None
+        If provided, save figure
+    show_line : bool
+        Whether to connect Pareto points
+    """
+
+    costs = [s["cost"] for s in archive]
+    ras = [s["ra"] for s in archive]
+
+    # 按 cost 排序（画线更漂亮）
+    pairs = sorted(zip(costs, ras))
+    costs, ras = zip(*pairs)
+
+    plt.figure(figsize=(6, 5))
+
+    plt.scatter(costs, ras, s=80, color="tab:red", label="Pareto solutions")
+
+    if show_line:
+        plt.plot(costs, ras, linewidth=2)
+
+    plt.xlabel("Total cost", fontsize=12)
+    plt.ylabel("Total anxiety (RA)", fontsize=12)
+
+    plt.title(title)
+
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.legend()
+
+    plt.tight_layout()
+
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300)
+
+    plt.show()
+
+
+
+
+def plot_search_evolution(
+    cand_points,
+    work_history,
+    archive,
+    title="Search Evolution",
+    save_path=None,
+):
+    """
+    Visualize search behaviour.
+
+    Parameters
+    ----------
+    cand_points : list[(cost, ra)]
+    work_history : list[(iter, cost, ra)]
+    archive : list[dict]
+    """
+
+    # candidates
+    xs = [c for c, _ in cand_points]
+    ys = [a for _, a in cand_points]
+
+    # trajectory
+    wx = [c for _, c, _ in work_history]
+    wy = [a for _, _, a in work_history]
+
+    # Pareto
+    ax = [s["cost"] for s in archive]
+    ay = [s["ra"] for s in archive]
+
+    plt.figure(figsize=(7, 5))
+
+    # candidate cloud
+    plt.scatter(xs, ys, s=8, alpha=0.2, label="All candidates")
+
+    # Pareto front
+    plt.scatter(ax, ay, s=80, color="red", label="Pareto archive")
+
+    # trajectory
+    plt.plot(wx, wy, linewidth=2, color="black", label="Work trajectory")
+
+    plt.xlabel("Total cost")
+    plt.ylabel("Total anxiety (RA)")
+
+    plt.title(title)
+
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.legend()
+
+    plt.tight_layout()
+
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300)
+
+    plt.show()
+
+
+
+
+

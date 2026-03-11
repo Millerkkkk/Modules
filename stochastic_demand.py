@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Optional
 import numpy as np
+from scipy.stats import truncnorm
 
 
 def generate_normal_scenarios(
@@ -10,39 +11,41 @@ def generate_normal_scenarios(
     random_state: Optional[int] = None,
 ) -> np.ndarray:
     """
-    Generate stochastic demand scenarios without truncation.
+    Generate stochastic demand scenarios from a left-truncated normal distribution.
 
-    xi_i^s ~ Normal(mu_i, (beta * mu_i)^2)
-
-    Parameters
-    ----------
-    mu : array-like, shape (n_customers,)
-        Mean demand for each customer (deterministic demand).
-    beta : float
-        Standard deviation ratio, sigma_i = beta * mu_i.
-    n_scenarios : int
-        Number of scenarios to generate.
-    random_state : int or None
-        Random seed for reproducibility.
-
-    Returns
-    -------
-    scenarios : ndarray, shape (n_scenarios, n_customers)
+    xi_i^s ~ TN(mu_i, (beta * mu_i)^2; lower=0)
     """
     mu = np.asarray(mu, dtype=float)
+
+    if mu.ndim != 1:
+        raise ValueError("mu must be a 1D array.")
+    if n_scenarios <= 0:
+        raise ValueError("n_scenarios must be positive.")
+    if beta < 0:
+        raise ValueError("beta must be nonnegative.")
+
     sigma = beta * mu
+    scenarios = np.empty((n_scenarios, len(mu)), dtype=float)
 
     rng = np.random.default_rng(random_state)
 
-    # 若 beta=0 或 mu_i=0，对应 sigma_i=0，会自然退化为常数 mu_i
-    scenarios = rng.normal(
-        loc=mu,
-        scale=sigma,
-        size=(n_scenarios, len(mu))
-    )
+    for i, (m, s) in enumerate(zip(mu, sigma)):
+        if m < 0:
+            raise ValueError(f"mu[{i}] must be nonnegative, got {m}.")
 
-    # ✅ 消除负值（关键修复）
-    scenarios = np.maximum(scenarios, 0.0)
+        if s == 0:
+            scenarios[:, i] = m
+        else:
+            a = (0.0 - m) / s
+            b = np.inf
+            scenarios[:, i] = truncnorm.rvs(
+                a=a,
+                b=b,
+                loc=m,
+                scale=s,
+                size=n_scenarios,
+                random_state=rng,
+            )
 
     return scenarios
 

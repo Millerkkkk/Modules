@@ -116,14 +116,16 @@ class CustomerGA:
         return pop
 
     def tournament_select(self, pop: np.ndarray, costs: np.ndarray) -> np.ndarray:
-        k = self.params.tournament_k
+        k = min(int(self.params.tournament_k), pop.shape[0])
         idx = self.rng.integers(0, pop.shape[0], size=k)
         best = idx[int(np.argmin(costs[idx]))]
         return pop[best].copy()
 
     def ox_crossover(self, p1: np.ndarray, p2: np.ndarray) -> np.ndarray:
-        """Order Crossover (OX) for permutation."""
         n = p1.size
+        if n <= 1:
+            return p1.copy()
+
         a, b = sorted(self.rng.choice(n, size=2, replace=False))
         child = np.full(n, -1, dtype=int)
         child[a:b+1] = p1[a:b+1]
@@ -169,6 +171,7 @@ class CustomerGA:
 
         for _gen in range(self.params.num_gen):
             elite_size = max(0, int(self.params.elite_size))
+            elite_size = min(elite_size, self.params.pop_size)
             elite_idx = np.argsort(costs)[:elite_size]
             elites = pop[elite_idx].copy()
 

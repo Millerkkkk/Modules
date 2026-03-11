@@ -3,13 +3,29 @@ import time
 import numpy as np
 
 
+def improves_cost(cand, cur, eps):
+    return cand["cost"] < cur["cost"] - eps
+
 class VNDRefiner:
-    def __init__(self, neighborhood, evaluator, eval_proxy=None, rng=None, eps=1e-9):
+    def __init__(self, neighborhood, evaluator, dominates_fn, eval_proxy=None, rng=None, eps=1e-9, same_eval=None,):
+        """
+        neighborhood: 邻域算子容器，需支持 nb.apply(op, routes_by_clusters, cid=cid)
+        evaluator:    full evaluator, evaluator(routes)->cend
+        dominates_fn: dominates(a, b, eps)->bool
+                      其中 a/b 至少含 keys: "cost", "ra"
+        eval_proxy:   便宜评估器；若为 None，则退化为 evaluator
+        """
         self.nb = neighborhood
         self.eval = evaluator
+        self.dominates = dominates_fn
         self.eval_proxy = eval_proxy if eval_proxy is not None else evaluator
         self.rng = rng if rng is not None else np.random.default_rng()
         self.eps = float(eps)
+
+        if same_eval is None:
+            self.same_eval = (self.eval_proxy is self.eval)
+        else:
+            self.same_eval = bool(same_eval)
 
     @staticmethod
     def _pack(routes, cend):
@@ -20,18 +36,32 @@ class VNDRefiner:
             "cend": cend
         }
     
-
-    def refine1(self, routes_by_clusters, NL=None, cid=None, 
-               tries_per_op=3, max_steps=50):
+    @staticmethod
+    def _signature(routes_by_clusters):
         """
-        顺序 VND：
+        给 routes_by_clusters 做一个可哈希签名，用于 cache。
+        假设格式:
+            {
+              cid1: [[...], [...]],
+              cid2: [[...], ...]
+            }
+        """
+        items = []
+        for c in sorted(routes_by_clusters.keys()):
+            routes_t = tuple(tuple(seg) for seg in routes_by_clusters[c])
+            items.append((c, routes_t))
+        return tuple(items)
+    
+    def refine1(self, routes_by_clusters, NL=None, cid=None, tries_per_op=3, max_steps=50):
+        """
+        顺序 VND（full eval 版本）：
         - 按 NL 顺序依次尝试
-        - 某邻域找到改进：接受并 idx=0 重来
+        - 某邻域找到支配改进：接受并 idx=0 重来
         - 某邻域无改进：idx += 1
-        """
-        def improves_cost(cand, cur, eps):
-            return cand["cost"] < cur["cost"] - eps
 
+        返回:
+            best_routes, best_cend, best_sol_dict
+        """
         cur_routes = copy.deepcopy(routes_by_clusters)
         cur_cend = self.eval(cur_routes)
         cur = self._pack(cur_routes, cur_cend)
@@ -47,54 +77,51 @@ class VNDRefiner:
             improved = False
             best_cand = None
 
-            # 由于 op 是“一次随机 move”，给几次机会
+            # 一个 op 本身可能是随机 move，所以给多次尝试机会
             for _ in range(int(tries_per_op)):
                 cand_routes = self.nb.apply(op, cur["routes_by_clusters"], cid=cid)
                 cand_cend = self.eval(cand_routes)
                 cand = self._pack(cand_routes, cand_cend)
 
-                if improves_cost(cand, cur, self.eps):
+                if self.dominates(cand, cur, self.eps):
                     improved = True
                     best_cand = cand
                     break  # first-improvement
 
             if improved:
                 cur = best_cand
-                idx = 0  # 改进后从第一个邻域重新开始（VND标准做法）
+                idx = 0
             else:
-                idx += 1  # 该邻域无改进，换下一个
+                idx += 1
 
         return cur["routes_by_clusters"], cur["cend"], cur
-
+    
     def refine(self, routes_by_clusters, NL=None, cid=None, tries_per_op=3, max_steps=50):
         """
-        顺序 VND：
-        - 内部用 eval_proxy（便宜）判断 move 是否改进（带缓存）
-        - refine 结束后用 eval_full（昂贵）只评一次用于返回
-        同时统计 second-stage time（所有评估时间：proxy miss + full）
-        """
+        顺序 VND（proxy + cache + full eval 版本）：
+        - 内部用 eval_proxy 判断 move 是否支配当前解（带缓存）
+        - refine 结束后用 eval_full 只评一次最终解用于返回
+        - 统计 second-stage time（proxy miss + final full eval）
 
-        def improves_cost(cand, cur, eps):
-            return cand["cost"] < cur["cost"] - eps
+        返回:
+            final_routes, final_cend_full, info
+        其中 info 保持和你现有外层用法兼容，并额外包含：
+            - cost
+            - ra
+            - t_stage2
+            - n_cache
+        """
 
         eval_cache = {}
         t_stage2 = 0.0
 
-        def _signature(rbc):
-            items = []
-            for c in sorted(rbc.keys()):
-                routes_t = tuple(tuple(seg) for seg in rbc[c])
-                items.append((c, routes_t))
-            return tuple(items)
-
         def _eval_proxy_cached(rbc):
             nonlocal t_stage2
-            sig = _signature(rbc)
+            sig = self._signature(rbc)
             hit = eval_cache.get(sig, None)
             if hit is not None:
                 return hit
 
-            # ✅ 只在 cache miss 时计时（这才是真正的评估耗时）
             t0 = time.time()
             cend = self.eval_proxy(rbc)
             t_stage2 += time.time() - t0
@@ -105,13 +132,7 @@ class VNDRefiner:
         # 初始化当前解（proxy）
         cur_routes = copy.deepcopy(routes_by_clusters)
         cur_cend_proxy = _eval_proxy_cached(cur_routes)
-
-        cur = {
-            "routes_by_clusters": cur_routes,
-            "cost": float(cur_cend_proxy["total_cost"]),
-            "ra": float(cur_cend_proxy.get("total_ra", 0.0)),
-            "cend": cur_cend_proxy,
-        }
+        cur = self._pack(cur_routes, cur_cend_proxy)
 
         NL_list = list(NL) if NL else []
         steps = 0
@@ -127,18 +148,12 @@ class VNDRefiner:
             for _ in range(int(tries_per_op)):
                 cand_routes = self.nb.apply(op, cur["routes_by_clusters"], cid=cid)
                 cand_cend_proxy = _eval_proxy_cached(cand_routes)
+                cand = self._pack(cand_routes, cand_cend_proxy)
 
-                cand = {
-                    "routes_by_clusters": cand_routes,
-                    "cost": float(cand_cend_proxy["total_cost"]),
-                    "ra": float(cand_cend_proxy.get("total_ra", 0.0)),
-                    "cend": cand_cend_proxy,
-                }
-
-                if improves_cost(cand, cur, self.eps):
+                if self.dominates(cand, cur, self.eps):
                     improved = True
                     best_cand = cand
-                    break
+                    break  # first-improvement
 
             if improved:
                 cur = best_cand
@@ -147,10 +162,14 @@ class VNDRefiner:
                 idx += 1
 
         # ✅ full eval 也属于第二阶段：要计时
-        final_routes = cur["routes_by_clusters"]
-        t0 = time.time()
-        final_cend_full = self.eval(final_routes)
-        t_stage2 += time.time() - t0
+        final_routes = copy.deepcopy(cur["routes_by_clusters"])
+
+        if self.same_eval:
+            final_cend_full = cur["cend"]
+        else:
+            t0 = time.time()
+            final_cend_full = self.eval(final_routes)
+            t_stage2 += time.time() - t0
 
         # ✅ 不改变你外层解包习惯：把 t_stage2 放在第三返回值里
         info = {
@@ -159,10 +178,63 @@ class VNDRefiner:
             "ra": float(final_cend_full.get("total_ra", 0.0)),
             "cend": final_cend_full,
             "t_stage2": float(t_stage2),
-            "n_cache": len(eval_cache),
+            "n_cache": int(len(eval_cache)),
         }
         return final_routes, final_cend_full, info
 
+    # def refine(self, routes_by_clusters, NL=None, cid=None, tries_per_op=3, max_steps=50):
+    #     """
+    #     顺序 VND（full eval + cache 版本）
+    #     """
+
+    #     eval_cache = {}
+
+    #     def _eval_cached(rbc):
+    #         sig = self._signature(rbc)
+    #         if sig in eval_cache:
+    #             return eval_cache[sig]
+
+    #         cend = self.eval(rbc)
+    #         eval_cache[sig] = cend
+    #         return cend
+
+    #     cur_routes = copy.deepcopy(routes_by_clusters)
+    #     cur_cend = _eval_cached(cur_routes)
+    #     cur = self._pack(cur_routes, cur_cend)
+
+    #     NL_list = list(NL) if NL else []
+    #     steps = 0
+    #     idx = 0
+
+    #     while NL_list and steps < max_steps and idx < len(NL_list):
+    #         steps += 1
+    #         op = NL_list[idx]
+
+    #         improved = False
+    #         best_cand = None
+
+    #         for _ in range(int(tries_per_op)):
+    #             cand_routes = self.nb.apply(op, cur["routes_by_clusters"], cid=cid)
+
+    #             cand_cend = _eval_cached(cand_routes)
+    #             cand = self._pack(cand_routes, cand_cend)
+
+    #             if self.dominates(cand, cur, self.eps):
+    #                 improved = True
+    #                 best_cand = cand
+    #                 break
+
+    #         if improved:
+    #             cur = best_cand
+    #             idx = 0
+    #         else:
+    #             idx += 1
+
+    #     return (
+    #         copy.deepcopy(cur["routes_by_clusters"]),
+    #         copy.deepcopy(cur["cend"]),
+    #         copy.deepcopy(cur),
+    #     )
 
 
 class RVNDRefiner:

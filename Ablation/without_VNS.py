@@ -2,11 +2,16 @@ from collections import OrderedDict
 from dataclasses import dataclass
 import json
 import os
+from pathlib import Path
 import random
 import sys
 import time
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
+
+MODULES_ROOT = Path(__file__).resolve().parents[1]   # .../Project_python/Modules
+if str(MODULES_ROOT) not in sys.path:
+    sys.path.insert(0, str(MODULES_ROOT))
 
 from matplotlib import pyplot as plt
 import numpy as np
@@ -17,9 +22,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from stochastic_demand import fast_forward_selection, generate_normal_scenarios
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "./.."))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+
 
 
 
@@ -32,16 +35,16 @@ from CustomerPlanning_GA import plan_internal_gbs_order_ga
 from GbPlanning import plan_gb_order
 from CustomerPlanning import plan_internal_gbs_order
 
-from Modules.EVRP.loader import load_problem      # 按你实际路径改
-from Modules.Clustering.api import clustering               # 你重构后的统一入口
-from Modules.Clustering.plot import plot_clusters
-from Modules.GB.api import gb_clustering
+from EVRP.loader import load_problem      # 按你实际路径改
+from Clustering.api import clustering               # 你重构后的统一入口
+from Clustering.plot import plot_clusters
+from GB.api import gb_clustering
 
 from evaluate import Evaluator
 from plot import plot_clusters_gbs, plot_clusters_gbs_with_gb_routes, plot_routes, plot_pareto_front, plot_search_evolution
-from Modules.VNS.neighborhood import Neighborhood
-from Modules.VNS.shaking import Shaker
-from Modules.VNS.vnd import VNDRefiner
+from VNS.neighborhood import Neighborhood
+from VNS.shaking import Shaker
+from VNS.vnd import VNDRefiner
 
 
 
@@ -1850,8 +1853,7 @@ def run_once_spr_iter(
 
 
 
-
-def run_once_spr_eval_cache(
+def run_once_spr(
     instance_path: str,
     beta: float,
     run_id: int,
@@ -1867,7 +1869,7 @@ def run_once_spr_eval_cache(
     max_time_sec: Optional[float] = None,
     ra_safe_param: float = 0.1,
     ra_risk_param: float = 0.7,
-    eps=1e-9,
+    eps=1e-9
 ):
     # =============================
     # 0. Stop-condition validation
@@ -2360,630 +2362,6 @@ def run_once_spr_eval_cache(
 
     return result
 
-
-
-def run_once_spr(
-    instance_path: str,
-    beta: float,
-    run_id: int,
-    seed: int,
-    n_scenarios: int = 50,
-    n_reduced_scenarios: int = 10,
-    verbose: int = 1,
-    log_every: int = 20,
-    A_MAX: int = 500,
-    max_iter: Optional[int] = None,
-    max_eval: Optional[int] = None,
-    max_time_sec: Optional[float] = None,
-    ra_safe_param: float = 0.1,
-    ra_risk_param: float = 0.7,
-    eps=1e-9,
-):
-    # =============================
-    # 0. Stop-condition validation
-    # =============================
-    if max_iter is not None and max_iter <= 0:
-        raise ValueError("max_iter must be a positive integer or None.")
-    if max_eval is not None and max_eval <= 0:
-        raise ValueError("max_eval must be a positive integer or None.")
-    if max_time_sec is not None and max_time_sec <= 0:
-        raise ValueError("max_time_sec must be a positive number or None.")
-
-    if all(x is None for x in [max_iter, max_eval, max_time_sec]):
-        raise ValueError("At least one stopping criterion must be set among max_iter, max_eval, max_time_sec.")
-
-    debug_log = []
-    start_time = time.time()
-
-    # =============================
-    # 1. Problem
-    # =============================
-    problem = load_problem(instance_path, ev_params)
-    instance_name = os.path.splitext(os.path.basename(instance_path))[0]
-
-    # =============================
-    # 2. Scenarios
-    # =============================
-    mu = np.asarray(problem.demand, dtype=float)
-    scenarios = generate_normal_scenarios(
-        mu=mu,
-        beta=beta,
-        n_scenarios=n_scenarios,
-        random_state=seed,
-    )
-
-    selected_idx, reduced_scenarios, reduced_probs = fast_forward_selection(
-        scenarios=scenarios,
-        n_select=n_reduced_scenarios,
-    )
-
-    # =============================
-    # 3. Evaluator / search objects
-    # =============================
-    rng = np.random.default_rng(seed)
-
-    evaluator = Evaluator(problem, ra_safe=ra_safe_param, ra_risk=ra_risk_param)
-
-    eval_counter = {"count": 0}
-
-    def eval_fn(routes):
-        eval_counter["count"] += 1
-        return evaluator.evaluate_ffs(routes, reduced_scenarios, reduced_probs)
-
-    nb = Neighborhood(
-        problem=problem,
-        removal_ratio=0.30,
-        alpha_boundary=0.50,
-        min_gb_len=2,
-        rng=rng,
-        evaluator=None,
-    )
-
-    shaker = Shaker(nb, NS)
-
-    vnd = VNDRefiner(
-        nb,
-        evaluator=eval_fn,
-        eval_proxy=eval_fn,
-        dominates_fn=dominates,
-        rng=rng,
-        eps=eps,
-    )
-
-    # =============================
-    # 4. Clustering
-    # =============================
-    depot_coords = np.asarray(
-        [(problem.nodes[i].x, problem.nodes[i].y) for i in problem.depots],
-        dtype=float,
-    )
-
-    clusters = clustering(
-        problem,
-        method="kmeans",
-        feature="location",
-        random_state=seed,
-    )
-
-    # =============================
-    # 5. GB + GA initialization
-    # =============================
-    routes_clusters = {}
-
-    for cid, cluster in clusters.items():
-        customer_ids = list(cluster)
-        points = np.asarray(
-            [(problem.nodes[i].x, problem.nodes[i].y) for i in customer_ids],
-            dtype=float,
-        )
-
-        gbs_info = gb_clustering(
-            points,
-            method="gb_kmeans",
-            split_k=0.6,
-            merge=True,
-            random_state=seed + cid,
-        )
-
-        gbs_customer_id = [[customer_ids[j] for j in cl] for cl in gbs_info.gbs]
-
-        params_gb = GAParams(
-            pop_size=30,
-            num_gen=100,
-            tournament_k=3,
-            crossover_rate=0.9,
-            mutation_rate=0.2,
-            inversion_rate=0.7,
-            elite_size=2,
-            seed=seed + 1000 + cid,
-        )
-        gb_order_result = plan_gb_order_ga(
-            gbs_info.centers,
-            depot_coords,
-            params_gb,
-        )
-
-        params_customer = GAParams(
-            pop_size=60,
-            num_gen=100,
-            tournament_k=3,
-            crossover_rate=0.9,
-            mutation_rate=0.3,
-            inversion_rate=0.7,
-            elite_size=2,
-            seed=seed + 2000 + cid,
-        )
-        routes = plan_internal_gbs_order_ga(
-            problem,
-            gb_order_result.order,
-            gbs_info.centers,
-            gbs_customer_id,
-            params=params_customer,
-        )
-
-
-        # aca_gb_params = ACOParams(
-        #     num_ants=10,
-        #     num_iter=60,
-        #     alpha=1,
-        #     beta=2,
-        #     rho=0.1,
-        #     epsilon=0.1,
-        # )
-
-        # aca_customer_params = ACOParams(
-        #     num_ants=20,
-        #     num_iter=100,
-        #     alpha=1,
-        #     beta=2,
-        #     rho=0.1,
-        #     epsilon=0.1,
-        # )
-
-        # gb_order_result = plan_gb_order(
-        #     gbs_info.centers,
-        #     depot_coords,
-        #     aca_gb_params,
-        # )
-
-        # routes = plan_internal_gbs_order(
-        #     problem,
-        #     gb_order_result.order,
-        #     gbs_info.centers,
-        #     gbs_customer_id,
-        #     params=aca_customer_params,
-        # )
-
-        routes_clusters[cid] = routes
-
-    # =============================
-    # 6. Initial solution by FFS
-    # =============================
-    init_eval, routes_clusters = evaluator.evaluate_init_ffs(
-        routes_clusters, reduced_scenarios, reduced_probs
-    )
-    init_sol = pack_solution(routes_clusters, init_eval)
-
-    archive = []
-    archive, _ = pareto_insert(archive, init_sol, eps=eps)
-    if A_MAX is not None:
-        archive = truncate_by_crowding(archive, max_size=A_MAX)
-
-    cand_points = [(float(init_sol["cost"]), float(init_sol["ra"]))]
-
-    if verbose >= 1:
-        print(f"[Init] cost={init_sol['cost']:.6f}, ra={init_sol['ra']:.6f}")
-
-    # 参考点
-    ref_cost = max(float(init_sol["cost"]) * 1.2, float(init_sol["cost"]) + 1.0)
-    ref_ra = max(float(init_sol["ra"]) * 1.2, float(init_sol["ra"]) + 1e-6)
-
-    archive_change_count = 0
-    last_improve_iter = 0
-
-    # =============================
-    # 7. Multi-objective VNS + VND
-    # =============================
-
-    k_max = len(NS)
-
-    stop_by_iter = False
-    stop_by_eval = False
-    stop_by_time = False
-
-    stop_reason = "not_stopped"
-
-    prev_best_cost = float(init_sol["cost"])
-    prev_best_ra = float(init_sol["ra"])
-    prev_hv = 0.0
-    prev_n_candidates = int(len(cand_points))
-
-    stall_iters_so_far = 0
-    last_improve_iter_so_far = 0
-
-    it = 0
-    while True:
-        elapsed = time.time() - start_time
-
-        if max_time_sec is not None and elapsed >= max_time_sec:
-            stop_by_time = True
-            stop_reason = "max_time"
-            if verbose >= 1:
-                print(f"[Stop] reached max_time_sec={max_time_sec}.")
-            break
-
-        if max_eval is not None and eval_counter["count"] >= max_eval:
-            stop_by_eval = True
-            stop_reason = "max_eval"
-            if verbose >= 1:
-                print(f"[Stop] reached max_eval={max_eval}.")
-            break
-
-        if max_iter is not None and it >= max_iter:
-            stop_by_iter = True
-            stop_reason = "max_iter"
-            if verbose >= 1:
-                print(f"[Stop] reached max_iter={max_iter}.")
-            break
-
-        it += 1
-        archive_changed = False
-        iter_t0 = time.time()
-
-        eval_before_iter = int(eval_counter["count"])
-        elapsed_before_iter = float(time.time() - start_time)
-
-        old_points_iter = {(float(s["cost"]), float(s["ra"])) for s in archive}
-
-        k = 1
-        while k <= k_max:
-            elapsed = time.time() - start_time
-            if max_time_sec is not None and elapsed >= max_time_sec:
-                stop_by_time = True
-                stop_reason = "max_time"
-                break
-
-            if max_eval is not None and eval_counter["count"] >= max_eval:
-                stop_by_eval = True
-                stop_reason = "max_eval"
-                break
-
-            old_points = {(float(s["cost"]), float(s["ra"])) for s in archive}
-
-            # 1) MO-Shake
-            archive_shake = mo_shake(
-                archive=archive,
-                shaker=shaker,
-                evaluator=eval_fn,
-                k=k,
-                cid=None,
-            )
-
-            for sol in archive_shake:
-                cand_points.append((float(sol["cost"]), float(sol["ra"])))
-
-            # # 2) Alternate cost-first / ra-first by outer iteration
-            # if it % 2 == 1:
-            #     first_obj, second_obj = "cost", "ra"
-            # else:
-            #     first_obj, second_obj = "ra", "cost"
-
-            first_obj, second_obj = "ra", "cost"
-
-            archive_vnd_first = mo_vnd(
-                shaken_set=archive_shake,
-                vnd=vnd,
-                obj=first_obj,
-                NL=NL,
-                cid=None,
-                eps=eps,
-                max_size=A_MAX,
-            )
-
-            elapsed = time.time() - start_time
-            if max_time_sec is not None and elapsed >= max_time_sec:
-                stop_by_time = True
-                stop_reason = "max_time"
-                break
-
-            if max_eval is not None and eval_counter["count"] >= max_eval:
-                stop_by_eval = True
-                stop_reason = "max_eval"
-                break
-
-            archive_vnd_second = mo_vnd(
-                shaken_set=archive_vnd_first,
-                vnd=vnd,
-                obj=second_obj,
-                NL=NL,
-                cid=None,
-                eps=eps,
-                max_size=A_MAX,
-            )
-
-            for sol in archive_vnd_second:
-                cand_points.append((float(sol["cost"]), float(sol["ra"])))
-                ref_cost = max(ref_cost, float(sol["cost"]) * 1.05)
-                ref_ra = max(ref_ra, float(sol["ra"]) * 1.05)
-
-            archive_new = list(archive)
-            for sol in archive_vnd_second:
-                archive_new, _ = pareto_insert(archive_new, sol, eps=eps)
-
-            if A_MAX is not None:
-                archive_new = truncate_by_crowding(archive_new, max_size=A_MAX)
-
-            new_points = {(float(s["cost"]), float(s["ra"])) for s in archive_new}
-
-            if new_points != old_points:
-                archive = archive_new
-                archive_changed = True
-                k = 1
-            else:
-                k += 1
-
-        if stop_by_time or stop_by_eval or stop_by_iter:
-            break
-
-        if archive_changed:
-            archive_change_count += 1
-            last_improve_iter = it
-
-        iter_time = time.time() - iter_t0
-        best_cost_sol = min(archive, key=lambda s: s["cost"])
-        best_ra_sol = min(archive, key=lambda s: s["ra"])
-
-        arch_stat = archive_stats(archive)
-        hv = hypervolume_2d_min(archive, ref_point=(ref_cost, ref_ra))
-
-        new_points_iter = {(float(s["cost"]), float(s["ra"])) for s in archive}
-        n_new_to_archive = len(new_points_iter - old_points_iter)
-        n_removed_from_archive = len(old_points_iter - new_points_iter)
-
-        if verbose >= 2 or (verbose >= 1 and (it % log_every) == 0):
-            print(
-                f"[Iter {it}] archive={len(archive)} "
-                f"best_cost={best_cost_sol['cost']:.3f} "
-                f"best_ra={best_ra_sol['ra']:.6f} "
-                f"hv={hv:.6f} "
-                f"changed={archive_changed} "
-                f"elapsed={time.time() - start_time:.2f}s"
-            )
-
-        # ===== 本轮改进量 =====
-        best_cost_improve_abs = float(prev_best_cost - best_cost_sol["cost"])
-        best_ra_improve_abs = float(prev_best_ra - best_ra_sol["ra"])
-        hv_improve_abs = float(hv - prev_hv)
-
-        # 避免数值误差导致出现极小负数
-        if abs(best_cost_improve_abs) < 1e-12:
-            best_cost_improve_abs = 0.0
-        if abs(best_ra_improve_abs) < 1e-12:
-            best_ra_improve_abs = 0.0
-        if abs(hv_improve_abs) < 1e-12:
-            hv_improve_abs = 0.0
-
-        # ===== 停滞统计 =====
-        if archive_changed:
-            stall_iters_so_far = 0
-            last_improve_iter_so_far = int(it)
-        else:
-            stall_iters_so_far += 1
-
-        # ===== 本轮资源消耗 =====
-        eval_count_now = int(eval_counter["count"])
-        eval_count_iter = int(eval_count_now - eval_before_iter)
-
-        elapsed_now = float(time.time() - start_time)
-        elapsed_iter = float(elapsed_now - elapsed_before_iter)
-
-        n_candidates_now = int(len(cand_points))
-        n_candidates_iter = int(n_candidates_now - prev_n_candidates)
-
-        # ===== 效率指标 =====
-        eval_per_sec = float(eval_count_iter / iter_time) if iter_time > 1e-12 else np.nan
-        cand_per_sec = float(n_candidates_iter / iter_time) if iter_time > 1e-12 else np.nan
-        hv_per_sec = float(hv_improve_abs / iter_time) if iter_time > 1e-12 else np.nan
-        hv_per_eval = float(hv_improve_abs / eval_count_iter) if eval_count_iter > 0 else np.nan
-
-        debug_log.append({
-            # -----------------------------
-            # A. identity
-            # -----------------------------
-            "iter": int(it),
-            "elapsed_sec": elapsed_now,
-            "elapsed_iter_sec": elapsed_iter,
-
-            # -----------------------------
-            # B. evaluation / candidate budget
-            # -----------------------------
-            "eval_count": eval_count_now,
-            "eval_count_iter": eval_count_iter,
-            "n_candidates_so_far": n_candidates_now,
-            "n_candidates_iter": n_candidates_iter,
-
-            # -----------------------------
-            # C. Pareto front quality
-            # -----------------------------
-            "best_cost_in_archive": float(best_cost_sol["cost"]),
-            "ra_of_best_cost": float(best_cost_sol["ra"]),
-            "best_ra_in_archive": float(best_ra_sol["ra"]),
-            "cost_of_best_ra": float(best_ra_sol["cost"]),
-
-            "worst_cost_in_archive": float(arch_stat["worst_cost"]),
-            "worst_ra_in_archive": float(arch_stat["worst_ra"]),
-            "spread_cost": float(arch_stat["spread_cost"]),
-            "spread_ra": float(arch_stat["spread_ra"]),
-
-            "archive_size": int(len(archive)),
-            "archive_changed": bool(archive_changed),
-            "n_new_to_archive": int(n_new_to_archive),
-            "n_removed_from_archive": int(n_removed_from_archive),
-
-            "hv": float(hv),
-            "hv_ref_cost": float(ref_cost),
-            "hv_ref_ra": float(ref_ra),
-
-            # -----------------------------
-            # D. improvement per iteration
-            # -----------------------------
-            "best_cost_improve_abs": float(best_cost_improve_abs),
-            "best_ra_improve_abs": float(best_ra_improve_abs),
-            "hv_improve_abs": float(hv_improve_abs),
-
-            # 相对改进（可选，但很有用）
-            "best_cost_improve_rel": (
-                float(best_cost_improve_abs / prev_best_cost)
-                if abs(prev_best_cost) > 1e-12 else np.nan
-            ),
-            "best_ra_improve_rel": (
-                float(best_ra_improve_abs / prev_best_ra)
-                if abs(prev_best_ra) > 1e-12 else np.nan
-            ),
-            "hv_improve_rel": (
-                float(hv_improve_abs / prev_hv)
-                if abs(prev_hv) > 1e-12 else np.nan
-            ),
-
-            # -----------------------------
-            # E. stagnation diagnosis
-            # -----------------------------
-            "last_improve_iter_so_far": int(last_improve_iter_so_far),
-            "stall_iters_so_far": int(stall_iters_so_far),
-
-            # -----------------------------
-            # F. efficiency
-            # -----------------------------
-            "iter_time": float(iter_time),
-            "eval_per_sec": float(eval_per_sec),
-            "cand_per_sec": float(cand_per_sec),
-            "hv_per_sec": float(hv_per_sec),
-            "hv_per_eval": float(hv_per_eval),
-        })
-        prev_best_cost = float(best_cost_sol["cost"])
-        prev_best_ra = float(best_ra_sol["ra"])
-        prev_hv = float(hv)
-        prev_n_candidates = int(len(cand_points))
-    # =============================
-    # 8. Final summary
-    # =============================
-    runtime = time.time() - start_time
-
-    min_cost_sol = min(archive, key=lambda s: s["cost"])
-    min_ra_sol = min(archive, key=lambda s: s["ra"])
-
-    init_stats = copy.deepcopy(init_sol.get("stats", {}))
-    best_cost_stats = copy.deepcopy(
-    min_cost_sol.get("stats", min_cost_sol.get("cend", {}).get("stats", {}))
-    )
-    best_ra_stats = copy.deepcopy(
-        min_ra_sol.get("stats", min_ra_sol.get("cend", {}).get("stats", {}))
-    )
-
-    final_arch_stat = archive_stats(archive)
-    hv_final = hypervolume_2d_min(archive, ref_point=(ref_cost, ref_ra))
-
-    improve_cost_abs = float(init_sol["cost"] - min_cost_sol["cost"])
-    improve_ra_abs = float(init_sol["ra"] - min_ra_sol["ra"])
-
-    improve_cost_rel = (
-        improve_cost_abs / float(init_sol["cost"])
-        if abs(float(init_sol["cost"])) > 1e-12 else np.nan
-    )
-    improve_ra_rel = (
-        improve_ra_abs / float(init_sol["ra"])
-        if abs(float(init_sol["ra"])) > 1e-12 else np.nan
-    )
-
-    if verbose >= 1:
-        print(
-            f"best_cost={min_cost_sol['cost']:.6f} "
-            f"best_ra={min_ra_sol['ra']:.6f} "
-            f"archive={len(archive)} hv={hv_final:.6f} runtime={runtime:.2f}s "
-            f"stop_reason={stop_reason}"
-        )
-    print("init_sol keys:", init_sol.keys())
-    print("min_cost_sol keys:", min_cost_sol.keys())
-    print("min_ra_sol keys:", min_ra_sol.keys())
-    print("archive[0] keys:", archive[0].keys())
-
-        
-    print("init_sol stats:", init_sol.get("stats"))
-    print("min_cost_sol stats:", min_cost_sol.get("stats"))
-    print("min_ra_sol stats:", min_ra_sol.get("stats"))
-
-    result = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "instance": instance_name,
-        "beta": float(beta),
-        "run_id": int(run_id),
-        "seed": int(seed),
-        "ra_safe_param": float(ra_safe_param),
-        "ra_risk_param": float(ra_risk_param),
-
-        "init_cost": float(init_sol["cost"]),
-        "init_ra": float(init_sol["ra"]),
-
-        "best_cost_in_archive": float(min_cost_sol["cost"]),
-        "ra_of_best_cost": float(min_cost_sol["ra"]),
-
-        "best_ra_in_archive": float(min_ra_sol["ra"]),
-        "cost_of_best_ra": float(min_ra_sol["cost"]),
-
-        "archive_size": int(len(archive)),
-        "n_candidates": int(len(cand_points)),
-        "n_iterations": int(it),
-
-        "hv_final": float(hv_final),
-        "hv_ref_cost": float(ref_cost),
-        "hv_ref_ra": float(ref_ra),
-
-        "spread_cost_final": float(final_arch_stat["spread_cost"]),
-        "spread_ra_final": float(final_arch_stat["spread_ra"]),
-
-        "archive_change_count": int(archive_change_count),
-        "last_improve_iter": int(last_improve_iter),
-
-
-        "improve_cost_abs": float(improve_cost_abs),
-        "improve_cost_rel": float(improve_cost_rel),
-        "improve_ra_abs": float(improve_ra_abs),
-        "improve_ra_rel": float(improve_ra_rel),
-
-        "eval_count": int(eval_counter["count"]),
-
-        "runtime_sec": float(runtime),
-        "max_time_sec": None if max_time_sec is None else float(max_time_sec),
-        "saa_S": int(scenarios.shape[0]),
-        "n_reduced_scenarios": int(reduced_scenarios.shape[0]),
-
-        "pareto_points": [(float(sol["cost"]), float(sol["ra"])) for sol in archive],
-        "archive": archive,
-        "min_cost_sol": min_cost_sol,
-        "min_ra_sol": min_ra_sol,
-        "cand_points": cand_points,
-        "clusters": clusters,
-        "selected_idx": selected_idx,
-        "debug_log": debug_log,
-
-        "max_iter_limit": None if max_iter is None else int(max_iter),
-        "max_eval": None if max_eval is None else int(max_eval),
-
-        "stop_by_iter": bool(stop_by_iter),
-        "stop_by_eval": bool(stop_by_eval),
-        "stop_by_time": bool(stop_by_time),
-
-        "stop_reason": stop_reason,
-
-        "init_stats": init_stats,
-        "best_cost_stats": best_cost_stats,
-        "best_ra_stats": best_ra_stats,
-    }
-
-    return result
-
-
-
 # =========================================================
 # 工具函数：把 numpy / pandas / 自定义对象尽量转成 json 可存格式
 # =========================================================
@@ -3396,16 +2774,16 @@ def run_experiments_resume_ultimate(
     tasks = []
     total_tasks = 0
     skipped = 0
-    for instance_idx, instance_path in enumerate(instance_list):
+    for instance_path in instance_list:
         instance_name = os.path.splitext(os.path.basename(instance_path))[0]
-        for beta_idx, beta in enumerate(betas):
+        for beta in betas:
             for run_id in range(1, n_runs + 1):
                 total_tasks += 1
                 key = _make_key(instance_name, beta, run_id)
                 if key in done:
                     skipped += 1
                     continue
-                seed = int(base_seed + 10000 * instance_idx + 100 * beta_idx + (run_id - 1))
+                seed = int(base_seed + 1000 * round(float(beta) * 10) + (run_id - 1))
                 tasks.append((instance_path, instance_name, float(beta), int(run_id), seed))
 
     print(f"[INSTANCES] found={len(instance_list)}")
@@ -3523,14 +2901,15 @@ def run_experiments_resume_parallel(
     instance_suffix: str = ".txt",
 
     # 透传给 run_once_spr 的参数
-    n_scenarios: int = 100,
+    n_scenarios: int = 50,
     n_reduced_scenarios: int = 10,
     verbose: int = 1,
     log_every: int = 20,
-    A_MAX: int = 200,
-    max_iter: Optional[int] = None,
+    A_MAX: int = 60,
+    max_iter: int = 200,
+    patience: int = 50,
     max_eval: Optional[int] = None,
-    max_time_sec: Optional[int] = None,
+    max_time_sec: float = 3600,
     eps: float = 1e-9,
 
     ra_safe_param: float = 0.1,
@@ -3577,6 +2956,7 @@ def run_experiments_resume_parallel(
         "log_every": log_every,
         "A_MAX": A_MAX,
         "max_iter": max_iter,
+        "patience": patience,
         "max_eval": max_eval,
         "max_time_sec": max_time_sec,
         "eps": eps,
@@ -3587,17 +2967,16 @@ def run_experiments_resume_parallel(
     tasks = []
     total_tasks = 0
     skipped = 0
-    for instance_idx, instance_path in enumerate(instance_list):
+    for instance_path in instance_list:
         instance_name = os.path.splitext(os.path.basename(instance_path))[0]
-        for beta_idx, beta in enumerate(betas):
+        for beta in betas:
             for run_id in range(1, n_runs + 1):
                 total_tasks += 1
                 key = _make_key(instance_name, beta, run_id)
                 if key in done:
                     skipped += 1
                     continue
-                seed = int(base_seed + 10000 * instance_idx + 100 * beta_idx + (run_id - 1))
-                # seed = int(base_seed + 1000 * round(float(beta) * 10) + (run_id - 1))
+                seed = int(base_seed + 1000 * round(float(beta) * 10) + (run_id - 1))
                 tasks.append((instance_path, instance_name, float(beta), int(run_id), seed, common_kwargs))
 
     print(f"[INSTANCES] found={len(instance_list)}")
@@ -3726,9 +3105,10 @@ def _worker_run_one_ra2(task):
             verbose=kwargs["verbose"],
             log_every=kwargs["log_every"],
             A_MAX=kwargs["A_MAX"],
+            patience=kwargs["patience"],
             max_eval=kwargs.get("max_eval"),
             max_iter=kwargs.get("max_iter"),
-            max_time_sec=kwargs.get("max_time_sec"),
+            max_time_sec=kwargs["max_time_sec"],
             ra_safe_param=ra_safe_param,
             ra_risk_param=ra_risk_param,
             eps=kwargs["eps"],
@@ -3767,7 +3147,6 @@ def _worker_run_one_ra2(task):
             "result": None,
             "error": repr(e),
         }
-    
 
 def run_ra_grid_experiments_resume_parallel(
     instance_source: str,
@@ -3782,15 +3161,18 @@ def run_ra_grid_experiments_resume_parallel(
     continue_on_error: bool = True,
     recursive: bool = True,
     instance_suffix: str = ".txt",
-    n_scenarios: int = 100,
+
+    n_scenarios: int = 50,
     n_reduced_scenarios: int = 10,
     verbose: int = 1,
     log_every: int = 20,
-    A_MAX: int = 200,
-    max_iter: Optional[int] = None,
+    A_MAX: int = 60,
+    max_iter: int = 200,
+    patience: int = 50,
     max_eval: Optional[int] = None,
-    max_time_sec: Optional[int] = None,
+    max_time_sec: float = 3600,
     eps: float = 1e-9,
+
     append_run_tag: bool = False,
 ):
     if results_dir is None:
@@ -3827,11 +3209,7 @@ def run_ra_grid_experiments_resume_parallel(
     else:
         print(f"[RESUME] No progress file. Will create: {progress_csv}")
 
-    instance_list = _list_instances(
-        instance_source=instance_source,
-        recursive=recursive,
-        suffix=instance_suffix,
-    )
+    instance_list = _list_instances(instance_source=instance_source, recursive=recursive, suffix=instance_suffix)
 
     common_kwargs = {
         "n_scenarios": n_scenarios,
@@ -3840,6 +3218,7 @@ def run_ra_grid_experiments_resume_parallel(
         "log_every": log_every,
         "A_MAX": A_MAX,
         "max_iter": max_iter,
+        "patience": patience,
         "max_eval": max_eval,
         "max_time_sec": max_time_sec,
         "eps": eps,
@@ -3849,9 +3228,9 @@ def run_ra_grid_experiments_resume_parallel(
     total_tasks = 0
     skipped = 0
 
-    for instance_idx, instance_path in enumerate(instance_list):
+    for instance_path in instance_list:
         instance_name = os.path.splitext(os.path.basename(instance_path))[0]
-        for beta_idx, beta in enumerate(betas):
+        for beta in betas:
             for ra_safe_param in ra_safe_list:
                 for ra_risk_param in ra_risk_list:
                     if float(ra_risk_param) <= float(ra_safe_param):
@@ -3864,11 +3243,7 @@ def run_ra_grid_experiments_resume_parallel(
                             skipped += 1
                             continue
 
-                        seed = int(base_seed + 10000 * instance_idx + 100 * beta_idx + (run_id - 1))
-
-                        task_kwargs = {
-                            **common_kwargs,
-                        }
+                        seed = int(base_seed + 1000 * round(float(beta) * 10) + (run_id - 1))
 
                         tasks.append((
                             instance_path,
@@ -3878,7 +3253,7 @@ def run_ra_grid_experiments_resume_parallel(
                             float(ra_risk_param),
                             int(run_id),
                             seed,
-                            task_kwargs,
+                            common_kwargs,
                         ))
 
     print(f"[INSTANCES] found={len(instance_list)}")
@@ -3914,19 +3289,14 @@ def run_ra_grid_experiments_resume_parallel(
             if res["ok"]:
                 rec_full = res["result"]
 
-                group_label = (
-                    f"safe{rec_full['ra_safe_param']:.2f}_risk{rec_full['ra_risk_param']:.2f}"
-                ).replace("/", "_")
-                group_dir = os.path.join(detail_dir, group_label)
-                os.makedirs(group_dir, exist_ok=True)
-
                 json_name = (
                     f"{rec_full['instance']}"
                     f"_beta{rec_full['beta']:.3f}"
+                    f"_safe{rec_full['ra_safe_param']:.2f}"
+                    f"_risk{rec_full['ra_risk_param']:.2f}"
                     f"_run{rec_full['run_id']}.json"
                 ).replace("/", "_")
-
-                json_path = os.path.join(group_dir, json_name)
+                json_path = os.path.join(detail_dir, json_name)
                 _save_json(json_path, rec_full)
 
                 rec_flat = _extract_progress_record(rec_full)
@@ -4011,134 +3381,104 @@ def run_ra_grid_experiments_resume_parallel(
         print(f"[DONE] Final Excel   : {final_xlsx}")
     else:
         print("[DONE] No progress file found; nothing to export.")
+        
 
 
         
 if __name__ == "__main__":
 
-    # ## ========= 单个文件运行，调试
-    # instance_name = 'c104_21'
-    # base_path = r"D:\02_Research\DataSet\evrptw_instances_LijunFan\large_instances(100customer21cs_10)"
-    # file_path = os.path.join(base_path, f"{instance_name}.txt")
+    ## ========= 单个文件运行，调试
+    instance_name = 'c101_21'
+    base_path = r"D:\02_Research\DataSet\evrptw_instances_LijunFan\large_instances(100customer21cs_10)"
+    file_path = os.path.join(base_path, f"{instance_name}.txt")
 
-    # res = run_once_spr(
-    #     instance_path=file_path,
-    #     beta=0.2,
-    #     run_id=1,
-    #     seed=42,
-    #     n_scenarios=100,
-    #     n_reduced_scenarios=10,
-    #     verbose=1,
-    #     log_every=1,
-    #     A_MAX= 60,
-    #     max_iter= None,
-    #     max_eval= None,
-    #     max_time_sec=1200,
-    #     ra_safe_param=0.1,
-    #     ra_risk_param= 0.7,
-    #     eps=1e-9
-    # )
-
-    # archive = res["archive"]
-    # cand_points = res["cand_points"]
-
-    # print(res["runtime_sec"])
-    # print(res["archive_size"])
-
-    # plot_pareto_front(
-    #     archive=archive,
-    #     title=f"Pareto Front - {instance_name}"
-    # )
-
-    # plot_search_evolution(
-    #     cand_points=cand_points,
-    #     archive=archive,
-    #     title=f"Search Evolution - {instance_name}"
-    # )
-
-
-    # log_df = pd.DataFrame(res["debug_log"])
-
-    # log_df.plot(x="iter", y="hv", title="HV vs Iteration")
-    # log_df.plot(x="iter", y="archive_size", title="Archive Size vs Iteration")
-    # # log_df.plot(x="iter", y=["best_cost_in_archive", "best_ra_in_archive"], title="Best Objectives vs Iteration")
-    # log_df.plot(x="iter", y="best_cost_in_archive", title="Best Objectives vs Iteration")
-    # log_df.plot(x="iter", y="best_ra_in_archive", title="Best Objectives vs Iteration")
-
-    # plt.show()
-
-
-
-
-    # # =========================
-    # # 你自己的全局参数
-    # # =========================
-    # BETAS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
-    betas = [0.2]
-    n_runs = 10
-
-    ## ======== 整个文件夹运行
-    path = r"D:\02_Research\DataSet\Paper_MO_SPR\Ablation\GB"
-    out_path = r"D:\02_Research\6_experimentResults\Paper_GB_MOVNS\Ablation\without_GB\0427testGB"
-
-    run_experiments_resume_parallel(
-        instance_source=path,
-        betas=betas,
-        n_runs=n_runs,
-        results_dir=out_path,
-        base_seed=42,
-        max_workers=10,
-        recursive=True,
+    res = run_once_spr(
+        instance_path=file_path,
+        beta=0.2,
+        run_id=1,
+        seed=42,
         n_scenarios=100,
-        n_reduced_scenarios=10, 
-        max_iter= None,
-        max_eval= None,
-        max_time_sec=1200,   # 1600
-        A_MAX=200,
+        n_reduced_scenarios=10,
         verbose=1,
+        log_every=1,
+        A_MAX= 60,
+        patience= None,
+        max_iter= None,
+        max_eval= 100000,
+        max_time_sec=200000,
         ra_safe_param=0.1,
         ra_risk_param= 0.7,
         eps=1e-9
     )
 
+    archive = res["archive"]
+    cand_points = res["cand_points"]
 
-    # for s in [5, 10, 20, 50, 100]:
+    print(res["runtime_sec"])
+    print(res["archive_size"])
 
-    #     path = r"D:\02_Research\DataSet\Paper_MO_SPR\Ablation\Scenario_reduction"
-    #     out_path = r"D:\02_Research\6_experimentResults\Paper_GB_MOVNS\Ablation\Scenario_reduction\1final"
+    plot_pareto_front(
+        archive=archive,
+        title=f"Pareto Front - {instance_name}"
+    )
 
-    #     run_experiments_resume_parallel(
-    #         instance_source=path,
-    #         betas=betas,
-    #         n_runs=n_runs,
-    #         results_dir=out_path,
-    #         base_seed=42,
-    #         max_workers=10,
-    #         recursive=True,
-    #         n_scenarios=100,
-    #         n_reduced_scenarios=s, 
-    #         max_iter= None,
-    #         max_eval= None,
-    #         max_time_sec=1200,   # 1600
-    #         A_MAX=200,
-    #         verbose=1,
-    #         ra_safe_param=0.1,
-    #         ra_risk_param= 0.7,
-    #         eps=1e-9
-    #     )
+    plot_search_evolution(
+        cand_points=cand_points,
+        archive=archive,
+        title=f"Search Evolution - {instance_name}"
+    )
 
 
+    log_df = pd.DataFrame(res["debug_log"])
+
+    log_df.plot(x="iter", y="hv", title="HV vs Iteration")
+    log_df.plot(x="iter", y="archive_size", title="Archive Size vs Iteration")
+    # log_df.plot(x="iter", y=["best_cost_in_archive", "best_ra_in_archive"], title="Best Objectives vs Iteration")
+    log_df.plot(x="iter", y="best_cost_in_archive", title="Best Objectives vs Iteration")
+    log_df.plot(x="iter", y="best_ra_in_archive", title="Best Objectives vs Iteration")
+
+    plt.show()
 
 
 
-    # step = 0.1
-    # n_points = int(1 / step) + 1
 
-    # ra_safe_list = [round(i * step, 2) for i in range(n_points)]
-    # ra_risk_list = [round(i * step, 2) for i in range(n_points)]
+    # # # =========================
+    # # # 你自己的全局参数
+    # # # =========================
+    # BETAS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    # # betas = [0.2]
+    # n_runs = 10
 
-    # path = r"D:\02_Research\DataSet\Paper_MO_SPR\Sensitivity\RA"
-    # out_path = r"D:\02_Research\6_experimentResults\Paper_GB_MOVNS\Sensitivity\RA"
+    # ## ======== 整个文件夹运行
+    # path = r"D:\02_Research\DataSet\Paper_MO_SPR\Sensitivity"
+    # out_path = r"D:\02_Research\6_experimentResults\Sensitivity\Beta"
+
+    # run_experiments_resume_parallel(
+    #     instance_source=path,
+    #     betas=BETAS,
+    #     n_runs=n_runs,
+    #     results_dir=out_path,
+    #     base_seed=42,
+    #     max_workers=10,
+    #     recursive=True,
+    #     n_scenarios=100,
+    #     n_reduced_scenarios=10,
+    #     max_time_sec=1200,   # 1小时
+    #     # patience=None,
+    #     max_eval=None,
+    #     verbose=1,
+    #     ra_safe_param=0.1,
+    #     ra_risk_param= 0.7,
+    # )
+
+
+
+    # step = 0.05
+    # ra_safe_list = [round(i * step, 2) for i in range(21)]   # 0.00, 0.05, ..., 1.00
+    # ra_risk_list = [round(i * step, 2) for i in range(21)]   # 0.00, 0.05, ..., 1.00
+
+    # path = r"D:\02_Research\DataSet\Paper_MO_SPR\Sensitivity"
+    # out_path = r"D:\02_Research\6_experimentResults\Sensitivity"
 
     # run_ra_grid_experiments_resume_parallel(
     #     instance_source=path,
@@ -4153,7 +3493,8 @@ if __name__ == "__main__":
     #     n_scenarios=100,
     #     n_reduced_scenarios=10,
     #     max_time_sec=1200,
-    #     max_iter=100,
+    #     max_iter = 100,
+    #     patience = 20,
     #     max_eval=None,
     #     verbose=1,
     #     append_run_tag=False,

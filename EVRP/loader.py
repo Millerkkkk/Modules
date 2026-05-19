@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Dict, Tuple
 
-from Modules.EVRP.models.problem import EVRPProblem, build_evrp_problem
-from Modules.EVRP.io.instance_reader_solomon import read_instance
+from EVRP.models.problem import EVRPProblem, build_evrp_problem
+from EVRP.io.instance_reader_solomon import read_instance
 
 
 

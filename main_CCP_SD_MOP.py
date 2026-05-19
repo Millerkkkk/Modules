@@ -20,7 +20,7 @@ if ROOT not in sys.path:
 
 
 
-from params import ACOParams, GAParams
+from params import ACOParams, GAParams, ev_params
 import copy
 
 from GbPlanning_GA import plan_gb_order_ga
@@ -398,10 +398,7 @@ def run_once_ccp(
 
     instance_name = os.path.splitext(os.path.basename(instance_path))[0]
 
-    ev_params = {
-        "soc_max": 40.0,
-        "vehicle_capacity": 650.0,
-    }
+    
 
     problem = load_problem(instance_path, ev_params)
     evaluator = Evaluator(problem, ra_safe=0.1, ra_risk=0.7)
@@ -1392,32 +1389,32 @@ if __name__ == "__main__":
 
 
 
-    # # =========================
-    # # 你自己的全局参数
-    # # =========================
-    # BETAS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
-    # N_RUNS = 10
+    # =========================
+    # 你自己的全局参数
+    # =========================
+    BETAS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    N_RUNS = 10
 
-    # ## ======== 整个文件夹运行
-    # path = r'D:\02_Research\DataSet\SPR'
+    ## ======== 整个文件夹运行
+    path = r'D:\02_Research\DataSet\SPR'
 
-    # # run_experiments_resume_ultimate(
-    # #     BETAS,
-    # #     N_RUNS,
-    # #     instance_source=path,
-    # #     results_dir=r"D:\02_Research\Results",
-    # # )
-
-
-    # run_experiments_resume_ultimate_10_worker(
-    #     BETAS=BETAS,
-    #     N_RUNS=N_RUNS,
+    # run_experiments_resume_ultimate(
+    #     BETAS,
+    #     N_RUNS,
     #     instance_source=path,
     #     results_dir=r"D:\02_Research\Results",
-    #     base_seed=42,
-    #     update_summary_each_run=True,
-    #     continue_on_error=True,
     # )
+
+
+    run_experiments_resume_ultimate_10_worker(
+        BETAS=BETAS,
+        N_RUNS=N_RUNS,
+        instance_source=path,
+        results_dir=r"D:\02_Research\Results",
+        base_seed=42,
+        update_summary_each_run=True,
+        continue_on_error=True,
+    )
 
 
 

@@ -915,7 +915,7 @@ if __name__ == "__main__":
 
     ## ======== 整个文件夹运行
     input_path = r'D:\02_Research\DataSet\SPR'
-    SPR_output_path = r"D:\02_Research\6_experimentResults\SPR_parallel"
+    SPR_output_path = r"D:\02_Research\6_experimentResults\SPR_parallel_partial"
     CCP_output_path = r"D:\02_Research\6_experimentResults\CCP_parallel"
 
 
@@ -932,16 +932,16 @@ if __name__ == "__main__":
         create_timestamp_subdir=False,
     )
 
-    out_ccp = run_experiments_parallel_ccp(
-        BETAS=BETAS,
-        ALPHAS=ALPHAS,
-        N_RUNS=N_RUNS,
-        instance_source=input_path,
-        results_dir=CCP_output_path,
-        base_seed=42,
-        max_workers=10,
-        update_summary_each_run=True,
-        save_every=20,              # 每完成 10 个成功任务再刷新一次 summary_live
-        continue_on_error=True,
-        create_timestamp_subdir=False,   # 真正支持续跑时建议 False
-    )
+    # out_ccp = run_experiments_parallel_ccp(
+    #     BETAS=BETAS,
+    #     ALPHAS=ALPHAS,
+    #     N_RUNS=N_RUNS,
+    #     instance_source=input_path,
+    #     results_dir=CCP_output_path,
+    #     base_seed=42,
+    #     max_workers=10,
+    #     update_summary_each_run=True,
+    #     save_every=20,              # 每完成 10 个成功任务再刷新一次 summary_live
+    #     continue_on_error=True,
+    #     create_timestamp_subdir=False,   # 真正支持续跑时建议 False
+    # )

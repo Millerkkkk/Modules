@@ -182,6 +182,114 @@ class VNDRefiner:
         }
         return final_routes, final_cend_full, info
 
+    def refine_ffs0(self, solution, obj="cost", NL=None, cid=None, tries_per_op=1, max_steps=20):
+        """
+        单目标 VND-i（直接使用 self.eval），并返回访问过的候选点
+        """
+
+        if obj not in {"cost", "ra"}:
+            raise ValueError(f"Unsupported obj={obj}, expected 'cost' or 'ra'")
+
+        def better(cand, cur):
+            if obj == "cost":
+                return cand["cost"] < cur["cost"] - self.eps
+            return cand["ra"] < cur["ra"] - self.eps
+        
+        cur = copy.deepcopy(solution)
+        NL_list = list(NL) if NL else []
+        visited = []
+
+        steps = 0
+        idx = 0
+
+        while NL_list and steps < max_steps and idx < len(NL_list):
+            steps += 1
+            op = NL_list[idx]
+
+            improved = False
+            best_cand = None
+
+            for _ in range(int(tries_per_op)):
+                cand_routes = self.nb.apply(op, cur["routes_by_clusters"], cid=cid)
+
+                cand_cend = self.eval(cand_routes)
+
+                cand = self._pack(cand_routes, cand_cend)
+                visited.append(cand)
+
+                if better(cand, cur):
+                    improved = True
+                    best_cand = cand
+                    break
+
+            if improved:
+                cur = best_cand
+                idx = 0
+            else:
+                idx += 1
+
+        final_routes = copy.deepcopy(cur["routes_by_clusters"])
+        final_cend = cur["cend"]
+
+        info = {
+            "routes_by_clusters": final_routes,
+            "cost": float(cur["cost"]),
+            "ra": float(cur["ra"]),
+            "cend": final_cend,
+            "visited": visited,
+        }
+        return final_routes, final_cend, info
+
+
+    def refine_ffs(self, solution, obj="cost", NL=None, cid=None):
+        """
+        单目标 first-improvement VND
+        - 不使用 tries_per_op
+        - 不使用 max_steps
+        - 一旦改进就从第一个邻域重新开始
+        - 一整轮邻域都无改进则停止
+        """
+
+        if obj not in {"cost", "ra"}:
+            raise ValueError(f"Unsupported obj={obj}, expected 'cost' or 'ra'")
+
+        def better(cand, cur):
+            if obj == "cost":
+                return cand["cost"] < cur["cost"] - self.eps
+            return cand["ra"] < cur["ra"] - self.eps
+
+        cur = copy.deepcopy(solution)
+        NL_list = list(NL) if NL else []
+        visited = []
+
+        idx = 0
+        while NL_list and idx < len(NL_list):
+            op = NL_list[idx]
+
+            cand_routes = self.nb.apply(op, cur["routes_by_clusters"], cid=cid)
+            cand_cend = self.eval(cand_routes)
+            cand = self._pack(cand_routes, cand_cend)
+            visited.append(cand)
+
+            if better(cand, cur):
+                cur = cand
+                idx = 0
+            else:
+                idx += 1
+
+        final_routes = copy.deepcopy(cur["routes_by_clusters"])
+        final_cend = cur["cend"]
+
+        info = {
+            "routes_by_clusters": final_routes,
+            "cost": float(cur["cost"]),
+            "ra": float(cur["ra"]),
+            "cend": final_cend,
+            "visited": visited,
+        }
+        return final_routes, final_cend, info
+
+
     # def refine(self, routes_by_clusters, NL=None, cid=None, tries_per_op=3, max_steps=50):
     #     """
     #     顺序 VND（full eval + cache 版本）

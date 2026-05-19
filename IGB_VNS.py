@@ -97,7 +97,7 @@ def main():
     # -----------------------------
     # 1. Load instance
     # -----------------------------
-    instance_name = 'c203_21'
+    instance_name = 'rc103_21'
     base_path = r"D:\02_Research\DataSet\evrptw_instances_LijunFan\large_instances(100customer21cs_10)"
     file_path = os.path.join(base_path, f"{instance_name}.txt")
 
@@ -116,7 +116,7 @@ def main():
 
     # mu: 每个客户的期望需求（通常就用实例中的确定性 demand 当作 mu）
     mu = np.asarray(problem.demand, dtype=float)
-    beta = 0.6
+    beta = 0.1
     scenarios = generate_normal_scenarios(
         mu=mu,
         beta=beta,
@@ -854,13 +854,13 @@ if __name__ == "__main__":
     # base_path = r"D:\02_Research\DataSet\evrptw_instances_LijunFan\large_instances(100customer21cs_10)"
     # file_path = os.path.join(base_path, f"{instance_name}.txt")
 
-    path = r'D:\02_Research\DataSet\SPR'
+    # path = r'D:\02_Research\DataSet\SPR'
 
-    run_experiments_resume_ultimate(
-        instance_source=path,
-        results_dir=r"D:\02_Research\Results"
-    )
-    # main()
+    # run_experiments_resume_ultimate(
+    #     instance_source=path,
+    #     results_dir=r"D:\02_Research\Results"
+    # )
+    main()
 
 
 

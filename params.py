@@ -30,3 +30,9 @@ class GAParams:
 
     # elitism
     elite_size: int = 2
+
+
+ev_params = {
+        "soc_max": 40.0,
+        "vehicle_capacity": 650.0,
+    }
